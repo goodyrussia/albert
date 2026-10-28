@@ -1,0 +1,111 @@
+name: Build Techfeeds-VPN & Auto-Publish OTA
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Lock Permanent APK Signing Keystore
+        run: |
+          if [ ! -f "app/techfeeds-signing.jks" ]; then
+            echo "Generating permanent APK signing keystore (app/techfeeds-signing.jks)..."
+            keytool -genkeypair -v \
+              -keystore app/techfeeds-signing.jks \
+              -storetype PKCS12 \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 36500 \
+              -alias techfeeds \
+              -storepass techfeeds123 \
+              -keypass techfeeds123 \
+              -dname "CN=Techfeeds VPN, OU=Mobile, O=Techfeeds, L=Lagos, S=Lagos, C=NG"
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add app/techfeeds-signing.jks
+            git commit -m "chore: lock permanent APK signing keystore [skip ci]" || true
+            git pull --rebase origin ${{ github.ref_name }} || true
+            git push origin HEAD:${{ github.ref_name }} || true
+          else
+            echo "Using existing permanent keystore: app/techfeeds-signing.jks"
+          fi
+
+      - name: Auto-Increment Build Code for OTA Update
+        id: version_bump
+        run: |
+          NEW_CODE=$((123 + GITHUB_RUN_NUMBER))
+          NEW_NAME="1.2.${GITHUB_RUN_NUMBER}"
+
+          sed -i "s/versionCode [0-9]\+/versionCode ${NEW_CODE}/g" app/build.gradle
+          sed -i "s/versionName \"[^\"]\+\"/versionName \"${NEW_NAME}\"/g" app/build.gradle
+          sed -i "s/CURRENT_BUILD_CODE = [0-9]\+/CURRENT_BUILD_CODE = ${NEW_CODE}/g" app/src/main/java/com/albert/smartvpn/MainActivity.kt
+          sed -i "s/CURRENT_VERSION_NAME = \"[^\"]\+\"/CURRENT_VERSION_NAME = \"${NEW_NAME}\"/g" app/src/main/java/com/albert/smartvpn/MainActivity.kt
+
+          echo "build_code=${NEW_CODE}" >> $GITHUB_OUTPUT
+          echo "ver_name=${NEW_NAME}" >> $GITHUB_OUTPUT
+          echo "Auto-bumped to V${NEW_NAME} (Build ${NEW_CODE})"
+
+      - name: Build Signed APK (Gradle 8.6 + 4GB Heap)
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs='-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8'"
+        run: |
+          gradle wrapper --gradle-version 8.6
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Prepare APK & OTA update.json
+        run: |
+          APK_FILE=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          cp -f "$APK_FILE" ./Techfeeds-VPN-debug.apk
+
+          cat <<EOF > update.json
+          {
+            "versionCode": ${{ steps.version_bump.outputs.build_code }},
+            "versionName": "${{ steps.version_bump.outputs.ver_name }}",
+            "apkUrl": "https://github.com/${{ github.repository }}/releases/latest/download/Techfeeds-VPN-debug.apk",
+            "releaseNotes": "• Techfeeds-VPN V${{ steps.version_bump.outputs.ver_name }} (Build ${{ steps.version_bump.outputs.build_code }})\n• Permanent APK signature locked for seamless in-place OTA updates\n• Fixed Slipstream-DNSTT connection & slipnet:// / dnst:// imports\n• Fixed bandwidth persistence across tabs & Multi-Tick Config export"
+          }
+          EOF
+          cat update.json
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Techfeeds-VPN-V${{ steps.version_bump.outputs.ver_name }}-Build-${{ steps.version_bump.outputs.build_code }}
+          path: |
+            Techfeeds-VPN-debug.apk
+            update.json
+
+      - name: Publish OTA Release to GitHub Releases
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.version_bump.outputs.ver_name }}-b${{ steps.version_bump.outputs.build_code }}
+          name: "Techfeeds-VPN V${{ steps.version_bump.outputs.ver_name }} (Build ${{ steps.version_bump.outputs.build_code }})"
+          make_latest: true
+          files: |
+            Techfeeds-VPN-debug.apk
+            update.json

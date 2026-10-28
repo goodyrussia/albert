@@ -1,0 +1,49 @@
+name: Build Techfeeds VPN APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle 8.6
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.6'
+
+      - name: Build Techfeeds VPN Debug APK
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
+
+      - name: Rename APK to Techfeeds-VPN.apk
+        run: |
+          mkdir -p dist
+          APK_FILE=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          cp "$APK_FILE" dist/Techfeeds-VPN.apk
+
+      - name: Upload Techfeeds-VPN APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Techfeeds-VPN-APK
+          path: dist/Techfeeds-VPN.apk
+          if-no-files-found: error

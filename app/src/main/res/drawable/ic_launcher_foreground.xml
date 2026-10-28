@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer Royal Gold Shield -->
+    <path
+        android:pathData="M54,22 L80,33 L80,55 C80,71 69,82 54,88 C39,82 28,71 28,55 L28,33 Z"
+        android:strokeWidth="2.8"
+        android:strokeColor="#FFFFD54F">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="28"
+                android:startY="22"
+                android:endX="80"
+                android:endY="88"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF31135E" />
+                <item android:offset="0.6" android:color="#FF1C093B" />
+                <item android:offset="1.0" android:color="#FF100424" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Inner Amethyst & Gold Crest -->
+    <path
+        android:pathData="M54,29 L73,37 L73,54 C73,66 64,75 54,80 C44,75 35,66 35,54 L35,37 Z"
+        android:strokeWidth="1.2"
+        android:strokeColor="#80B388FF"
+        android:fillColor="#00000000" />
+
+    <!-- Techfeeds 'T' + Lightning Emblem -->
+    <path
+        android:fillColor="#FFFFD54F"
+        android:pathData="M41,41 L67,41 L67,47 L57,47 L57,69 L51,69 L51,47 L41,47 Z" />
+
+    <!-- Cyber Amethyst Accent Bolt -->
+    <path
+        android:fillColor="#FFE040FB"
+        android:pathData="M58,51 L65,51 L59,60 L64,60 L55,72 L57,62 L53,62 Z" />
+</vector>

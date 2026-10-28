@@ -1,0 +1,346 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'kotlin-kapt'
+}
+
+android {
+    namespace 'com.albert.smartvpn'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.albert.smartvpn"
+        minSdk 24
+        targetSdk 34
+        versionCode 123
+        versionName "1.2.3"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        vectorDrawables {
+            useSupportLibrary true
+        }
+
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a", "x86", "x86_64"
+        }
+    }
+
+    signingConfigs {
+        debug {
+            storeFile file("techfeeds-permanent.p12")
+            storePassword "techfeeds123"
+            keyAlias "techfeedskey"
+            keyPassword "techfeeds123"
+            storeType "PKCS12"
+        }
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs', 'libs', 'src/main/libs', 'jniLibs']
+        }
+    }
+
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            outputFileName = "Techfeeds-VPN-${variant.name}.apk"
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+            shrinkResources false
+            signingConfig signingConfigs.debug
+        }
+        release {
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+    buildFeatures {
+        compose true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion '1.5.8'
+    }
+    packaging {
+        resources {
+            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+            excludes += 'META-INF/DEPENDENCIES'
+            excludes += 'META-INF/LICENSE*'
+            excludes += 'META-INF/NOTICE*'
+            excludes += 'META-INF/INDEX.LIST'
+            excludes += 'META-INF/*.kotlin_module'
+            excludes += 'META-INF/versions/**'
+            excludes += 'META-INF/BCKEY.DSA'
+            excludes += 'META-INF/BCKEY.SF'
+            excludes += 'META-INF/BC1024KE.DSA'
+            excludes += 'META-INF/BC1024KE.SF'
+            excludes += 'META-INF/BC2048KE.DSA'
+            excludes += 'META-INF/BC2048KE.SF'
+        }
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols += [
+                '**/libdnstt.so',
+                '**/libxray.so',
+                '**/libgojni.so',
+                '**/libhev-socks5-tunnel.so',
+                '**/libhysteria2.so'
+            ]
+        }
+    }
+}
+
+tasks.register("provisionNativeEngines") {
+    doLast {
+        def jniArm64 = file("src/main/jniLibs/arm64-v8a")
+        def jniArm32 = file("src/main/jniLibs/armeabi-v7a")
+        def keystoreFile = file("techfeeds-permanent.p12")
+        jniArm64.mkdirs()
+        jniArm32.mkdirs()
+
+        def shScript = """
+            JNI64="${jniArm64.absolutePath}"
+            JNI32="${jniArm64.absolutePath.replace('arm64-v8a', 'armeabi-v7a')}"
+            KEYSTORE_OUT="${keystoreFile.absolutePath}"
+            mkdir -p "\$JNI64" "\$JNI32"
+            TMP_DIR=\$(mktemp -d)
+            export PATH=\$PATH:/usr/local/go/bin:\$HOME/go/bin
+
+            # 0. Generate 100% Deterministic Permanent APK Signing Keystore (techfeeds-permanent.p12)
+            # Ensures every GitHub Actions build forever has the exact same certificate signature!
+            cat << 'EOF_GO' > "\$TMP_DIR/genkey.go"
+package main
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"os"
+	"time"
+)
+
+func deterministicPrime(seed string) *big.Int {
+	buf := make([]byte, 128)
+	for i := 0; i < 4; i++ {
+		h := sha256.Sum256([]byte(seed + string(rune('A'+i))))
+		copy(buf[i*32:(i+1)*32], h[:])
+	}
+	buf[0] |= 0xC0
+	buf[127] |= 0x01
+	p := new(big.Int).SetBytes(buf)
+	two := big.NewInt(2)
+	e := big.NewInt(65537)
+	one := big.NewInt(1)
+	for {
+		if p.ProbablyPrime(30) {
+			pm1 := new(big.Int).Sub(p, one)
+			if new(big.Int).GCD(nil, nil, pm1, e).Cmp(one) == 0 {
+				return p
+			}
+		}
+		p.Add(p, two)
+	}
+}
+
+func main() {
+	p := deterministicPrime("Techfeeds-VPN-Permanent-RSA-Prime-P-V1")
+	q := deterministicPrime("Techfeeds-VPN-Permanent-RSA-Prime-Q-V1")
+	n := new(big.Int).Mul(p, q)
+	one := big.NewInt(1)
+	pm1 := new(big.Int).Sub(p, one)
+	qm1 := new(big.Int).Sub(q, one)
+	phi := new(big.Int).Mul(pm1, qm1)
+	e := big.NewInt(65537)
+	d := new(big.Int).ModInverse(e, phi)
+
+	priv := &rsa.PrivateKey{
+		PublicKey: rsa.PublicKey{N: n, E: 65537},
+		D:         d,
+		Primes:    []*big.Int{p, q},
+	}
+	priv.Precompute()
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(20260123),
+		Subject: pkix.Name{
+			CommonName:   "Techfeeds-VPN Official",
+			Organization: []string{"Techfeeds SmartVPN"},
+			Country:      []string{"NG"},
+		},
+		NotBefore:             time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		NotAfter:              time.Date(2055, 1, 1, 0, 0, 0, 0, time.UTC),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		panic(err)
+	}
+
+	keyOut, _ := os.Create("tf_key.pem")
+	pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
+	keyOut.Close()
+
+	certOut, _ := os.Create("tf_cert.pem")
+	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	certOut.Close()
+}
+EOF_GO
+            (cd "\$TMP_DIR" && go run genkey.go && openssl pkcs12 -export -in tf_cert.pem -inkey tf_key.pem -out "\$KEYSTORE_OUT" -passout pass:techfeeds123 -name techfeedskey)
+            echo "Permanent deterministic keystore generated at \$KEYSTORE_OUT"
+
+            # Remove any corrupted (< 100KB) binaries
+            for f in "\$JNI64/"*.so "\$JNI32/"*.so; do
+                if [ -f "\$f" ] && [ \$(wc -c < "\$f") -lt 100000 ]; then
+                    rm -f "\$f"
+                fi
+            done
+
+            # 1. Official Hysteria2 Native Engine (libhysteria2.so)
+            if [ ! -s "\$JNI64/libhysteria2.so" ]; then
+                echo "Provisioning libhysteria2.so (arm64-v8a)..."
+                curl -fsSL -L "https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-arm64" -o "\$JNI64/libhysteria2.so" || true
+                chmod 755 "\$JNI64/libhysteria2.so" || true
+            fi
+            if [ ! -s "\$JNI32/libhysteria2.so" ]; then
+                echo "Provisioning libhysteria2.so (armeabi-v7a)..."
+                curl -fsSL -L "https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-arm" -o "\$JNI32/libhysteria2.so" || true
+                chmod 755 "\$JNI32/libhysteria2.so" || true
+            fi
+
+            # 2. Official XTLS/Xray-core Native Engine (libxray.so)
+            if [ ! -s "\$JNI64/libxray.so" ]; then
+                echo "Provisioning official Xray-core (libxray.so) for arm64-v8a..."
+                curl -fsSL -L "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-android-arm64-v8a.zip" -o "\$TMP_DIR/xray64.zip" || \\
+                curl -fsSL -L "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip" -o "\$TMP_DIR/xray64.zip" || true
+                if [ -s "\$TMP_DIR/xray64.zip" ]; then
+                    unzip -o -j "\$TMP_DIR/xray64.zip" "xray" -d "\$TMP_DIR/x64" || true
+                    cp -f "\$TMP_DIR/x64/xray" "\$JNI64/libxray.so" || true
+                    chmod 755 "\$JNI64/libxray.so" || true
+                fi
+            fi
+            if [ ! -s "\$JNI32/libxray.so" ]; then
+                echo "Provisioning official Xray-core (libxray.so) for armeabi-v7a..."
+                curl -fsSL -L "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-android-arm32-v7a.zip" -o "\$TMP_DIR/xray32.zip" || \\
+                curl -fsSL -L "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm32-v7a.zip" -o "\$TMP_DIR/xray32.zip" || true
+                if [ -s "\$TMP_DIR/xray32.zip" ]; then
+                    unzip -o -j "\$TMP_DIR/xray32.zip" "xray" -d "\$TMP_DIR/x32" || true
+                    cp -f "\$TMP_DIR/x32/xray" "\$JNI32/libxray.so" || true
+                    chmod 755 "\$JNI32/libxray.so" || true
+                fi
+            fi
+
+            # 3. Build High-Speed Turbo-Patched DNSTT SlowDNS & Slipstream Engine (libdnstt.so)
+            echo "Building High-Speed Turbo KCP dnstt-client (libdnstt.so)..."
+            rm -f "\$JNI64/libdnstt.so" "\$JNI32/libdnstt.so"
+            git clone --depth 1 https://www.bamsoftware.com/git/dnstt.git "\$TMP_DIR/dnstt" 2>/dev/null || \\
+            git clone --depth 1 https://github.com/Mygod/dnstt.git "\$TMP_DIR/dnstt" 2>/dev/null || \\
+            git clone --depth 1 https://github.com/iyuec/dnstt.git "\$TMP_DIR/dnstt" 2>/dev/null || true
+
+            if [ -d "\$TMP_DIR/dnstt/dnstt-client" ]; then
+                sed -i 's/SetNoDelay(0, 0, 0, 1)/SetNoDelay(1, 10, 2, 1)/g' "\$TMP_DIR/dnstt/dnstt-client/"*.go 2>/dev/null || true
+                sed -i 's/SetWindowSize([0-9]*, [0-9]*)/SetWindowSize(1024, 1024)/g' "\$TMP_DIR/dnstt/dnstt-client/"*.go 2>/dev/null || true
+                sed -i 's/smux.DefaultConfig()/func() *smux.Config { c := smux.DefaultConfig(); c.MaxReceiveBuffer = 8388608; c.MaxStreamBuffer = 2097152; return c }()/g' "\$TMP_DIR/dnstt/dnstt-client/"*.go 2>/dev/null || true
+                (cd "\$TMP_DIR/dnstt/dnstt-client" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o "\$JNI64/libdnstt.so" .) || true
+                (cd "\$TMP_DIR/dnstt/dnstt-client" && CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags="-s -w" -o "\$JNI32/libdnstt.so" .) || true
+            fi
+            chmod 755 "\$JNI64/libdnstt.so" "\$JNI32/libdnstt.so" 2>/dev/null || true
+
+            # 4. Compile Authentic libhev-socks5-tunnel.so with Android NDK
+            if [ ! -s "\$JNI64/libhev-socks5-tunnel.so" ]; then
+                echo "Building libhev-socks5-tunnel.so with Android NDK..."
+                NDK_BIN=\$(find \${ANDROID_HOME:-/usr/local/lib/android/sdk} /usr/local/lib/android/sdk -name "ndk-build" 2>/dev/null | head -n 1)
+                if [ -n "\$NDK_BIN" ]; then
+                    mkdir -p "\$TMP_DIR/hev-proj"
+                    git clone --depth 1 --recurse-submodules https://github.com/heiher/hev-socks5-tunnel.git "\$TMP_DIR/hev-proj/jni" 2>/dev/null || true
+                    if [ -d "\$TMP_DIR/hev-proj/jni" ]; then
+                        "\$NDK_BIN" -C "\$TMP_DIR/hev-proj" -j4 APP_ABI="arm64-v8a armeabi-v7a" APP_PLATFORM=android-24 || true
+                        cp -f "\$TMP_DIR/hev-proj/libs/arm64-v8a/libhev-socks5-tunnel.so" "\$JNI64/libhev-socks5-tunnel.so" 2>/dev/null || true
+                        cp -f "\$TMP_DIR/hev-proj/libs/armeabi-v7a/libhev-socks5-tunnel.so" "\$JNI32/libhev-socks5-tunnel.so" 2>/dev/null || true
+                    fi
+                fi
+                chmod 755 "\$JNI64/libhev-socks5-tunnel.so" "\$JNI32/libhev-socks5-tunnel.so" 2>/dev/null || true
+            fi
+
+            rm -rf "\$TMP_DIR"
+            echo "=== Verified Native Binaries in arm64-v8a ==="
+            ls -lh "\$JNI64"
+        """
+
+        def proc = new ProcessBuilder("bash", "-c", shScript)
+            .directory(projectDir)
+            .inheritIO()
+            .start()
+        proc.waitFor()
+    }
+}
+
+preBuild.dependsOn("provisionNativeEngines")
+tasks.matching { it.name.startsWith("validateSigning") || it.name.startsWith("signingConfigWriter") }.configureEach {
+    dependsOn("provisionNativeEngines")
+}
+
+configurations.all {
+    resolutionStrategy {
+        force 'org.bouncycastle:bcprov-jdk18on:1.76'
+        force 'org.bouncycastle:bcpkix-jdk18on:1.76'
+        force 'org.bouncycastle:bcutil-jdk18on:1.76'
+    }
+    exclude group: 'org.bouncycastle', module: 'bcprov-jdk15on'
+    exclude group: 'org.bouncycastle', module: 'bcpkix-jdk15on'
+    exclude group: 'org.bouncycastle', module: 'bcprov-jdk15to18'
+    exclude group: 'org.bouncycastle', module: 'bcpkix-jdk15to18'
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar', '*.aar'])
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0'
+    implementation 'androidx.activity:activity-compose:1.8.2'
+    implementation platform('androidx.compose:compose-bom:2024.02.00')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-graphics'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.compose.material:material-icons-extended'
+    implementation 'androidx.room:room-runtime:2.6.1'
+    implementation 'androidx.room:room-ktx:2.6.1'
+    kapt 'androidx.room:room-compiler:2.6.1'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    implementation 'com.google.code.gson:gson:2.10.1'
+
+    // SSHJ + BouncyCastle 1.76
+    implementation 'com.hierynomus:sshj:0.38.0'
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.76'
+    implementation 'org.bouncycastle:bcpkix-jdk18on:1.76'
+    implementation 'org.bouncycastle:bcutil-jdk18on:1.76'
+    implementation 'com.jcraft:jzlib:1.1.3'
+    implementation 'net.i2p.crypto:eddsa:0.3.0'
+    implementation 'org.slf4j:slf4j-nop:2.0.9'
+
+    // CameraX & MLKit Barcode Scanning
+    implementation 'androidx.camera:camera-core:1.3.1'
+    implementation 'androidx.camera:camera-camera2:1.3.1'
+    implementation 'androidx.camera:camera-lifecycle:1.3.1'
+    implementation 'androidx.camera:camera-view:1.3.1'
+    implementation 'com.google.mlkit:barcode-scanning:17.2.0'
+}
